@@ -58,7 +58,11 @@ def provision_node(c, name_str, n, mb_mem, n_cpu, n_gpu=0)
       tmp_ip = $ip_gen.next
       node.vm.network "private_network", ip: tmp_ip
       if name_str == "mgmt"
-        node.vm.synced_folder DEEPOPS_PATH, "/home/vagrant/deepops", type: "9p", disabled: false, accessmode: "squash", owner: "1000"
+        # Allow passwordless ssh from mgmt to all nodes
+        node.vm.provision "file", source: "~/.ssh/id_rsa.pub", destination: "~/.ssh/id_rsa.pub"
+        node.vm.provision "file", source: "~/.ssh/id_rsa", destination: "~/.ssh/id_rsa"
+        # Mount deepops repo inside management nodes
+        node.vm.synced_folder DEEPOPS_PATH, "/home/vagrant/deepops", type: "nfs"
       end
       File.open(LIST_FILE,"a") do |line|
         line.puts "#{tmp_name}\t#{tmp_ip}\n"

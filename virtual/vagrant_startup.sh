@@ -161,6 +161,7 @@ function install_vagrant_plugins {
 function check_libvirtd {
   # Ensure libvirtd is running
   if ! sudo systemctl is-active --quiet libvirtd; then
+    ed "Enabling the libvirtd daemon"
     sudo systemctl enable libvirtd
     sudo systemctl start libvirtd
   fi
@@ -280,14 +281,30 @@ cd "${VIRT_DIR}" || exit 1
 
 # Destroy old vagrant cluster before creating new Vagrantfile
 newgrp "${LIBVIRT_GROUP}" << RM_VMS
-  vagrant destroy -f
+  if [ -e Vagrantfile ]; then
+    ed "Detected an old Vagrantfile, attempting to destroy deployment..."
+    vagrant destroy -f
+  fi
 RM_VMS
 
 # Create the vagrantfile
 envsubst "${ALL_VARS}" < ${VIRT_DIR}/Vagrantfile.tmpl > ${VIRT_DIR}/Vagrantfile
 
 # Create SSH key in default location if it doesn't exist
-[ ! -e ~/.ssh/id_rsa ] && ssh-keygen -q -t rsa -f ~/.ssh/id_rsa -C "" -N ""
+if [ ! -e ~/.ssh/id_rsa ]; then
+  ed "Creating ~/.ssh/id_rsa"
+  ssh-keygen -q -t rsa -f ~/.ssh/id_rsa -C "" -N ""
+fi
+
+# Allow connections to libvirt cluster through firewall
+ed "Allowing all connections from libvirt (192.168.121.0/24) through your firewall"
+sudo firewall-cmd --zone=trusted --add-source=192.168.121.0/24
+
+ei """Creating the following VMs running ${OS_DIST}${OS_VERSION}:
+- ${N_MGMT_VM} management VMs [${MGMT_CPU} CPU, ${MGMT_MEM} MB RAM]
+- ${N_LOGIN_VM} login VMs [${LOGIN_CPU} CPU, ${LOGIN_MEM} MB RAM]
+- $(( $N_GPUS / $GPUS_PER_VM )) gpu VMs [${GPU_CPU} CPU, ${GPUS_PER_VM} GPU, ${GPU_MEM} MB RAM]
+- $(( $N_GPUS / $GPUS_PER_VM - ${N_GPU_VM} )) cpu VMs [${GPU_CPU} CPU, ${GPU_MEM} MB RAM]"""
 
 # Ensure we're using the libvirt group during vagrant up
 newgrp "${LIBVIRT_GROUP}" << MAKE_VMS

@@ -13,3 +13,7 @@
 /k8s-config/
 /kubectl
 /tridentctl
+
+# virtual specific
+/virtual/machine_list.tsv
+/virtual/inventory
