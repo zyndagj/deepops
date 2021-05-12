@@ -1,22 +1,181 @@
 #!/usr/bin/env bash
 
 . /etc/os-release
-set -xe
 # Get absolute path for script, and convenience vars for virtual and root
 VIRT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+###################################
+# Helper functions
+###################################
+PROG=$(basename $0)
+function ee {
+  echo "[ERROR] $PROG: $@" >&2; exit 1
+}
+function ei {
+  echo "[INFO] $PROG: $@" >&2;
+}
+function ed {
+  [ -n "$VERBOSE" ] && echo "[DEBUG] $PROG: $@" >&2;
+}
+function ew {
+  echo "[WARN] $PROG: $@" >&2;
+}
+export -f ee ei ed ew
+###################################
+# Default Values
+###################################
+export VAGRANT_VERSION=2.2.16
+export VERBOSE=
+export SKIP_DEPS=
+# OS values
+export SUPPORTED_DIST=( ubuntu centos )
+export SUPPORTED_OS=( ubuntu1804 ubuntu2004 centos7 centos8 )
+export OS_DIST=ubuntu
+export OS_VERSION=2004
+# Management values
+export N_MGMT_VM=1
+export MGMT_CPU=2
+export MGMT_MEM=4096
+# Login values
+export N_LOGIN_VM=1
+export LOGIN_CPU=2
+export LOGIN_MEM=4096
+# Compute values
+export GPUS_PER_VM=1
+export N_GPUS=$(${VIRT_DIR}/scripts/get_passthrough_gpus.sh -N)
+export N_GPU_VM=$(( $N_GPUS / $GPUS_PER_VM ))
+export N_CPU_VM=0
+export GPU_CPU=2
+export GPU_MEM=4096
+###################################
+# Handle CLI arguments
+###################################
+function usage {
+  echo """Create a Vagrant cluster for testing DeepOps deployment
+
+Usage: $PROG [-h] [-v] [-s] [-O STR] [-V STR]
+             [-G INT] [-N INT] [-C INT] [-x INT]
+             [-M INT] [-m INT] [-y INT]
+             [-L INT] [-l INT] [-z INT]
+
+optional OS related arguments:
+ -O STR OS Distribution [${OS_DIST}]
+        Supported options: {${SUPPORTED_DIST[@]}}
+ -V STR OS Version [${OS_VERSION}]
+        Supported versions:
+          - ubuntu {1804, 2004}
+	  - centos {7, 8}
+
+optional compute node VM arguments:
+ -G INT GPUs per VM [${GPUS_PER_VM}]
+ -N INT Number of compute VMs [${N_GPU_VM}]
+        Increasing this beyond the number of GPUs
+        will create CPU-only nodes.
+ -C INT CPUs per compute VM [${GPU_CPU}]
+ -x INT MB RAM per compute VM [${GPU_MEM}]
+
+optional management VM arguments:
+ -M INT Number of management VMs [${N_MGMT_VM}]
+ -m INT Number CPUs per management VM [${MGMT_CPU}]
+ -y INT MB RAM per management VM [${MGMT_MEM}]
+
+optional login VM arguments:
+ -L INT Number of login VMs [${N_LOGIN_VM}]
+ -l INT Number CPUs per login VM [${LOGIN_CPU}]
+ -z INT MB RAM per login VM [${LOGIN_MEM}]
+
+optional arguments:
+ -s     Skip dependency check
+ -v     Enable verbose logging
+ -h     Print this help text""" >&2; exit 0
+}
+
+while getopts :hvsO:V:G:N:C:x:M:m:y:L:l:z: flag; do
+  case "${flag}" in
+    O) export OS_DIST=${OPTARG};;
+    V) export OS_VERSION=${OPTARG};;
+    G) export GPUS_PER_VM=${OPTARG};;
+    N) export N_GPU_VM=${OPTARG};;
+    C) export GPU_CPU=${OPTARG};;
+    x) export GPU_MEM=${OPTARG};;
+    M) export N_MGMT_VM=${OPTARG};;
+    m) export MGMT_CPU=${OPTARG};;
+    y) export MGMT_MEM=${OPTARG};;
+    L) export N_LOGIN_VM=${OPTARG};;
+    l) export LOGIN_CPU=${OPTARG};;
+    z) export LOGIN_MEM=${OPTARG};;
+    s) export SKIP_DEPS=1;;
+    v) export VERBOSE=1;;
+    :) echo -e "[ERROR] Missing an argument for ${OPTARG}\n" >&2; usage;;
+    \?) echo -e "[ERROR] Illegal option ${OPTARG}\n" >&2; usage;;
+    h) usage;;
+  esac
+done
+###################################
+# Check options
+###################################
+
+# Make sure the distribution is supported
+export FULL_OS=${OS_DIST}${OS_VERSION}
+ed "Using ${FULL_OS} for VM OS"
+if [[ ! " ${SUPPORTED_OS[@]} " =~ " ${FULL_OS} " ]]; then
+  ee "${FULL_OS} is not a supported distribution and version combination"
+fi
+
+# Make sure there are enough GPUs for at least one VM
+if [ "${GPUS_PER_VM}" -lt "${N_GPUS}" ]; then
+  ee "${GPUS_PER_VM} GPUs were requested per VM, and only ${N_GPUS} are available"
+fi
+
+# Warn if oversubscribing CPUs
+export N_CPUS=$(nproc --all)
+export N_REQUESTED_CPUS=$(( ${N_MGMT_VM}*${MGMT_CPU} + ${N_LOGIN_VM}*${LOGIN_CPU} + ${N_GPU_VM}*${GPU_CPU} ))
+if [ "${N_REQUESTED_CPUS}" -gt "${N_CPUS}" ]; then
+  ew "Your configuration consumes ${N_REQUESTED_CPUS}, but only ${N_CPUS} are detected"
+fi
+
+# Make sure there's a compute node
+if [ "${N_GPU_VM}" -lt "1" ]; then
+  ee "${N_GPU_VM} compute nodes requested. Please specify at least one"
+fi
 
 #####################################
 # Install Vagrant and Dependencies
 #####################################
+export YUM_DEPENDENCIES="centos-release-qemu-ev qem-kvm-ev qemu-kvm \
+    libvirt virt-install bridge-utils libvirt-devel libxslt-devel \
+    libxml2-devel libguestfs-tools-c sshpass qemu-kvm libvirt-bin \
+    libvirt-dev bridge-utils libguestfs-tools qemu virt-manager firewalld OVMF openssh-server"
+export APT_DEPENDENCIES="build-essential sshpass qemu-kvm libvirt-bin \
+    libvirt-dev bridge-utils libguestfs-tools qemu ovmf virt-manager firewalld ssh"
+
+function install_vagrant_plugins {
+  for plugin in libvirt sshfs host-shell scp mutate; do
+    pname=vagrant-${plugin}
+    if vagrant plugin list | grep -q ${pname}; then
+      ed "Vagrant plugin $pname already installed"
+    else
+      vagrant plugin install $pname
+    fi
+  done
+}
+function check_libvirtd {
+  # Ensure libvirtd is running
+  if ! sudo systemctl is-active --quiet libvirtd; then
+    sudo systemctl enable libvirtd
+    sudo systemctl start libvirtd
+  fi
+}
+function add_user_libvirt {
+  if ! groups "$USER" | grep "${LIBVIRT_GROUP}" &> /dev/null; then
+    ew "Adding your user to ${LIBVIRT_GROUP} so you can manage VMs."
+    ew "You may need to start a new shell to use vagrant interactively."
+    sudo usermod -a -G ${LIBVIRT_GROUP} $USER
+  fi
+}
 
 case "$ID" in
   rhel*|centos*)
     # Install Vagrant & Dependencies for RHEL Systems
-
-    export YUM_DEPENDENCIES="centos-release-qemu-ev qem-kvm-ev qemu-kvm libvirt virt-install \
-      bridge-utils libvirt-devel libxslt-devel libxml2-devel libguestfs-tools-c sshpass qemu-kvm libvirt-bin \
-      libvirt-dev bridge-utils libguestfs-tools qemu virt-manager firewalld OVMF"
-
     # shellcheck disable=SC2086
     if ! (yum grouplist installed | grep "Development Tools" && rpm -q $YUM_DEPENDENCIES) >/dev/null 2>&1; then
       echo "Installing yum dependencies..."
@@ -32,32 +191,24 @@ case "$ID" in
 
     # Ensure we have permissions to manage VMs
     export LIBVIRT_GROUP="libvirt"
-    if ! groups "$(whoami)" | grep "${LIBVIRT_GROUP}"; then
-      echo "Adding your user to ${LIBVIRT_GROUP} so you can manage VMs."
-      echo "You may need to start a new shell to use vagrant interactively."
-      sudo usermod -a -G libvirt "$(whoami)"
-    fi
+    add_user_libvirt
 
     # Ensure libvirtd is running
-    if ! sudo systemctl is-active --quiet libvirtd; then
-      sudo systemctl enable libvirtd
-      sudo systemctl start libvirtd
-    fi
+    check_libvirtd
 
     # Install Vagrant
     if ! which vagrant >/dev/null 2>&1; then
       # install vagrant (frozen at 2.2.3 to avoid various issues)
       pushd "$(mktemp -d)"
-      wget https://releases.hashicorp.com/vagrant/2.2.14/vagrant_2.2.14_x86_64.rpm -O vagrant.rpm
+      wget https://releases.hashicorp.com/vagrant/${VAGRANT_VERSION}/vagrant_${VAGRANT_VERSION}_x86_64.rpm -O vagrant.rpm
       #sudo rpm -i vagrant.rpm
       sudo yum -y localinstall vagrant.rpm
       popd
 
-      # install vagrant plugins
-      vagrant plugin install vagrant-libvirt
-      vagrant plugin install vagrant-host-shell vagrant-scp vagrant-mutate
     fi
-    vagrant --version
+    # install vagrant plugins
+    install_vagrant_plugins
+    ed "Detected $(vagrant --version)"
     # End Install Vagrant & Dependencies for RHEL Systems
     ;;
 
@@ -66,8 +217,18 @@ case "$ID" in
     export DEBIAN_FRONTEND=noninteractive
     # Install Vagrant & Dependencies for Debian Systems
 
-    export APT_DEPENDENCIES="build-essential sshpass qemu-kvm libvirt-bin libvirt-dev bridge-utils \
-      libguestfs-tools qemu ovmf virt-manager firewalld"
+
+    # Ensure we have permissions to manage VMs
+    case "${VERSION_ID}" in
+      18.*)
+        export LIBVIRT_GROUP="libvirt";;
+      20.*)
+        export LIBVIRT_GROUP="libvirt"
+        export APT_DEPENDENCIES="build-essential sshpass qemu-kvm libvirt-daemon-system \
+          libvirt-dev bridge-utils libguestfs-tools qemu ovmf virt-manager firewalld ssh";;
+      *)
+        export LIBVIRT_GROUP="libvirtd"
+    esac
 
     # shellcheck disable=SC2086
     if ! (dpkg -s $APT_DEPENDENCIES) >/dev/null 2>&1; then
@@ -81,68 +242,52 @@ case "$ID" in
       sudo apt-get install -y $APT_DEPENDENCIES
     fi
 
-    # Ensure we have permissions to manage VMs
-    case "${VERSION_ID}" in
-      18.*)
-        export LIBVIRT_GROUP="libvirt"
-	;;
-      *)
-        export LIBVIRT_GROUP="libvirtd"
-	;;
-    esac
-    if ! groups "$(whoami)" | grep "${LIBVIRT_GROUP}"; then
-      echo "Adding your user to ${LIBVIRT_GROUP} so you can manage VMs."
-      echo "You may need to start a new shell to use vagrant interactively."
-      sudo usermod -a -G libvirt "$(whoami)"
-    fi
+    add_user_libvirt
+    
+    # Ensure libvirtd is running
+    check_libvirtd
 
     # Install Vagrant
     if ! which vagrant >/dev/null 2>&1; then
-      # install vagrant (frozen at 2.2.3 to avoid various issues)
       pushd "$(mktemp -d)"
-      wget https://releases.hashicorp.com/vagrant/2.2.14/vagrant_2.2.14_x86_64.deb -O vagrant.deb
+      wget https://releases.hashicorp.com/vagrant/${VAGRANT_VERSION}/vagrant_${VAGRANT_VERSION}_x86_64.deb -O vagrant.deb
       sudo dpkg -i vagrant.deb
       popd
-  
-      # install vagrant plugins
-      vagrant plugin install vagrant-libvirt
-      vagrant plugin install vagrant-host-shell vagrant-scp vagrant-mutate
     fi
-    vagrant --version
+    # install vagrant plugins
+    install_vagrant_plugins
+    ed "Detected $(vagrant --version)"
     # End Install Vagrant & Dependencies for Debian Systems
     ;;
   *)
-    echo "Unsupported Operating System $ID_LIKE"
-    echo "You are on your own to install Vagrant and build a Vagrantfile then you can manually start the DeepOps virtual setup"
+    ew "Unsupported Operating System $ID_LIKE"
+    ee "You are on your own to install Vagrant and build a Vagrantfile then you can manually start the DeepOps virtual setup"
     ;;
 esac
 
 #####################################
 # Set up VMs for virtual cluster
 #####################################
-# Set up Vagrantfile and start up the configuration in Vagrant
-if [ ${DEEPOPS_FULL_INSTALL} ]; then
-  export CENTOS_DEEPOPS_VAGRANT_FILE="${DEEPOPS_VAGRANT_FILE:-${VIRT_DIR}/Vagrantfile-centos${DEEPOPS_OS_VERSION}-full}"
-  export UBUNTU_DEEPOPS_VAGRANT_FILE="${DEEPOPS_VAGRANT_FILE:-${VIRT_DIR}/Vagrantfile-ubuntu${DEEPOPS_OS_VERSION}-full}"
-else
-  export CENTOS_DEEPOPS_VAGRANT_FILE="${DEEPOPS_VAGRANT_FILE:-${VIRT_DIR}/Vagrantfile-centos}"
-  export UBUNTU_DEEPOPS_VAGRANT_FILE="${DEEPOPS_VAGRANT_FILE:-${VIRT_DIR}/Vagrantfile-ubuntu}"
-fi
-
-# Startup the specified VM OS, defaulting to Ubuntu
-if [ ${DEEPOPS_VAGRANT_OS} = "centos" ]; then
-  export DEEPOPS_VAGRANT_FILE=${CENTOS_DEEPOPS_VAGRANT_FILE}
-else
-  export DEEPOPS_VAGRANT_FILE=${UBUNTU_DEEPOPS_VAGRANT_FILE}
-fi
-
-cp "${DEEPOPS_VAGRANT_FILE}" "${VIRT_DIR}/Vagrantfile"
-
-# Create SSH key in default location if it doesn't exist
-yes n | ssh-keygen -q -t rsa -f ~/.ssh/id_rsa -C "" -N "" || echo "key exists"
+export DEEPOPS_PATH=$(dirname ${VIRT_DIR})
+OS_VARS='${OS_DIST} ${OS_VERSION} ${DEEPOPS_PATH}'
+MGMT_VARS='${N_MGMT_VM} ${MGMT_CPU} ${MGMT_MEM}'
+LOGIN_VARS='${N_LOGIN_VM} ${LOGIN_CPU} ${LOGIN_MEM}'
+GPU_VARS='${GPUS_PER_VM} ${N_GPUS} ${N_GPU_VM} ${GPU_CPU} ${GPU_MEM}'
+ALL_VARS="${OS_VARS} ${MGMT_VARS} ${LOGIN_VARS} ${GPU_VARS}"
 
 # Ensure we're in the right directory for Vagrant
 cd "${VIRT_DIR}" || exit 1
+
+# Destroy old vagrant cluster before creating new Vagrantfile
+newgrp "${LIBVIRT_GROUP}" << RM_VMS
+  vagrant destroy -f
+RM_VMS
+
+# Create the vagrantfile
+envsubst "${ALL_VARS}" < ${VIRT_DIR}/Vagrantfile.tmpl > ${VIRT_DIR}/Vagrantfile
+
+# Create SSH key in default location if it doesn't exist
+[ ! -e ~/.ssh/id_rsa ] && ssh-keygen -q -t rsa -f ~/.ssh/id_rsa -C "" -N ""
 
 # Ensure we're using the libvirt group during vagrant up
 newgrp "${LIBVIRT_GROUP}" << MAKE_VMS
@@ -156,3 +301,12 @@ newgrp "${LIBVIRT_GROUP}" << MAKE_VMS
   # Show the running VMs
   virsh list
 MAKE_VMS
+
+# Make inventory file
+if command -v python3 &> /dev/null; then
+  ed "Generating inventory with python3"
+  python3 scripts/generate_inventory.py
+else
+  ed "Generating inventory with python"
+  python scripts/generate_inventory.py
+fi

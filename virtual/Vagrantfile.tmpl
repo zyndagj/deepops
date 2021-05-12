@@ -1,0 +1,92 @@
+VAGRANTFILE_API_VERSION = "2"
+OS_DIST = "${OS_DIST}"       # ubuntu
+OS_VERSION = "${OS_VERSION}" # 2004
+N_MGMT_VM = ${N_MGMT_VM}   # 1
+MGMT_CPU = ${MGMT_CPU}     # 4
+MGMT_MEM = ${MGMT_MEM}     # 4096
+N_LOGIN_VM = ${N_LOGIN_VM} # 1
+LOGIN_CPU = ${MGMT_CPU}    # 4
+LOGIN_MEM = ${MGMT_MEM}    # 6144
+GPUS_PER_VM = ${GPUS_PER_VM} # 1
+N_GPUS = ${N_GPUS}
+N_GPU_VM = ${N_GPU_VM}     # 1
+GPU_CPU = ${GPU_CPU}       # 2
+GPU_MEM = ${GPU_MEM}       # 16384
+BOX_IMAGE = "generic/" + OS_DIST + OS_VERSION
+DEEPOPS_PATH = "${DEEPOPS_PATH}"
+
+# IP address generator
+def ip_generator
+  Enumerator.new do |enum|
+    i = 2
+    while i < 255
+      enum.yield "10.0.0."+i.to_s
+      i +=1
+    end
+  end
+end
+
+def gpu_generator
+  Enumerator.new do |enum|
+    `scripts/get_passthrough_gpus.sh`.split("\n").each do |line|
+      bus, slot, fun = line.split(" ")
+      enum.yield "0x"+bus, "0x"+slot, "0x"+fun
+    end
+  end
+end
+
+LIST_FILE = "machine_list.tsv"
+$gpu_gen = gpu_generator
+$ip_gen = ip_generator
+
+# Function for provisioning nodes
+def provision_node(c, name_str, n, mb_mem, n_cpu, n_gpu=0)
+  (1..n).each do |i|
+    tmp_name = "virtual-#{name_str}" + i.to_s.rjust(2, "0")
+    c.vm.define tmp_name do |node|
+      node.vm.provider "libvirt" do |v|
+        v.memory = mb_mem
+        v.cpus = n_cpu
+        v.machine_type = "q35"
+        v.cpu_mode = "host-passthrough"
+        (1..n_gpu).each do |g|
+          gpu_bus, gpu_slot, gpu_fun = $gpu_gen.next
+          v.pci :bus => gpu_bus, :slot => gpu_slot, :function => gpu_fun
+        end
+      end
+      node.vm.box = BOX_IMAGE
+      tmp_ip = $ip_gen.next
+      node.vm.network "private_network", ip: tmp_ip
+      if name_str == "mgmt"
+        node.vm.synced_folder DEEPOPS_PATH, "/home/vagrant/deepops", type: "9p", disabled: false, accessmode: "squash", owner: "1000"
+      end
+      File.open(LIST_FILE,"a") do |line|
+        line.puts "#{tmp_name}\t#{tmp_ip}\n"
+      end
+    end
+  end
+end
+
+File.delete(LIST_FILE) if File.exist?(LIST_FILE)
+
+Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
+  config.ssh.insert_key = false
+  config.ssh.private_key_path = ["~/.ssh/id_rsa", "~/.vagrant.d/insecure_private_key"]
+  config.vm.provision "file", source: "~/.ssh/id_rsa.pub", destination: "~/.ssh/authorized_keys"
+
+  provision_node(config, "mgmt", N_MGMT_VM, MGMT_MEM, MGMT_CPU)
+  provision_node(config, "login", N_LOGIN_VM, LOGIN_MEM, LOGIN_CPU)
+  
+  gpu_vm = N_GPUS/GPUS_PER_VM
+  provision_node(config, "gpu", gpu_vm, GPU_MEM, GPU_CPU)
+  cpu_vm = N_GPU_VM-gpu_vm
+  provision_node(config, "cpu", cpu_vm, GPU_MEM, GPU_CPU)
+
+  if OS_DIST == 'ubuntu'
+    config.vm.provision "shell", inline: <<-SHELL
+      sed -i -e 's/4\.2\.2\.1/8.8.8.8/g' -e 's/4\.2\.2\.2/8.8.4.4/g' /etc/netplan/01-netcfg.yaml
+      netplan apply
+      #apt-get update
+    SHELL
+  end
+end
