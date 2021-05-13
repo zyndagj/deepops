@@ -335,14 +335,13 @@ CE=${VIRT_DIR}/../config.example
 CV=${VIRT_DIR}/../config
 [ ! -e $CE ] && ee "The deepops/config.example directory doesn't seem to exist"
 if [ ! -e $CV ]; then
-  ei "Creating config.virtual from config.example"
+  ei "Creating config from config.example"
   cp -r $CE $CV
-  ed "Linking virtual inventory to config.virtual"
-  ln -s ../virtual/inventory ${CV}/inventory
+  ed "Linking virtual inventory to config"
+  ln -fs ../virtual/inventory ${CV}/inventory
   ed "Injecting vars from deepops/virtual/vars_files"
   cat vars_files/virt_k8s.yml >> ${CV}/group_vars/k8s-cluster.yml
   cat vars_files/virt_slurm.yml >> ${CV}/group_vars/slurm-cluster.yml
-  ei "You can reset this by configuration by deleting deepops/config.virtual and redeploying"
-else
-  [ ! -L ${CV}/inventory ] && ew "Existing config inventory is not linked to the virtual inventory. Please delete and re-run or link the current inventory 'ln -s ../virtual/inventory ../config/inventory'"
+  ei "You can reset this configuration by deleting deepops/config.virtual and redeploying"
 fi
+[ ! -L ${CV}/inventory ] && ew "Existing config inventory is not linked to the virtual inventory. Please delete and re-run or link the current inventory 'ln -s ../virtual/inventory ../config/inventory'"
