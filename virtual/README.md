@@ -30,7 +30,40 @@ Also, using VMs and optionally GPU passthrough assumes that the host machine has
 
 ## Start the Virtual Cluster
 
-1. From the main deepops directory, run the setup script.
+1. (Optional) Verify that your GPUs are configured for passthrough.
+
+   ```sh
+   $ ./scripts/get_passthrough_gpus.sh -v
+   [DEBUG] get_passthrough_gpus.sh: 01:00.0 VGA compatible controller [0300]: NVIDIA Corporation TU117GLM [Quadro T1000 Mobile] [10de:1fb9] (rev a1)
+   [DEBUG] get_passthrough_gpus.sh: Detected 1 device(s)
+   01 00 0
+   ```
+
+   Any GPUs detected by this script will automatically be passed into the Vagrant cluster.
+   
+   > Note: This step is optional and only necessary for testing GPU-specific features
+
+2. In the deepops/virtual directory, startup vagrant using `vagrant_startup.sh`. This will start 3 VMs by default.
+
+   ```sh
+   # Print full help text
+   ./vagrant_startup.sh -h
+   
+   # Start cluster (you will be prompted for sudo password
+   ./vagrant_startup.sh
+   ```
+
+   This deepops repository will be mounted by nfs on every `mgmt` node for easy development.
+
+3. Connect to management node and change to the deepops directory.
+   
+   ```sh
+   host$ vagrant ssh virtual-mgmt01
+
+   virtual-mgmt01$ cd ~/deepops
+   ```
+
+4. From the main deepops directory, run the setup script to install dependencies.
 
    This will install Ansible and other software on the provisioning machine which will be used to deploy all other software to the cluster. For more information on Ansible and why we use it, consult the [Ansible Guide](/docs/ANSIBLE.md).
 
@@ -38,57 +71,43 @@ Also, using VMs and optionally GPU passthrough assumes that the host machine has
    ./scripts/setup.sh
    ```
 
-2. In the virtual directory, startup vagrant. This will start 3 VMs by default.
-
-   ```sh
-   # NOTE: The default VM OS is Ubuntu. If you wish the VMs to spawn CentOS,
-   #       configure the DEEPOPS_VAGRANT_FILE variable accordingly...
-   #       export DEEPOPS_VAGRANT_FILE=$(pwd)/Vagrantfile-centos
-   # NOTE: virtual-gpu01 requires GPU passthrough, by default it is not enabled
-   # NOTE: 3 VMs are started by default: virtual-mgmt01, virtual-login01, virtual-gpu01
-   # NOTE: 6 VMs are started if the environment variable DEEPOPS_FULL_INSTALL is set:
-   #       virtual-mgmt01, virtual-mgmt02, virtual-mgmt03, virtual-login01, virtual-gpu01, virtual-gpu02
-   
-   cd virtual
-   ./vagrant_startup.sh
-   ```
-
-3. Start the cluster.
-
-   ```sh
-   # NOTE: Only Kubernetes is deployed by default. To also deploy Slurm,
-   #       configure the DEEPOPS_ENABLE_SLURM variable accordingly...
-   #       export DEEPOPS_ENABLE_SLURM=1
-   
-   ./cluster_up.sh
-   ```
-   
-   This script will run the ansible playbooks to deploy DeepOps to the Vagrant VMs and should complete without errors.
-   
-4. Set up the Kubernetes environment.
-
-   As part of `cluster_up.sh`, a fresh `kubectl` executable and the Kubernetes cluster's `admin.conf` are downloaded. To use these so commands may be run locally, a convenient script may be sourced...
-   
-   ```sh
-   source k8s_environment.sh
-   ```
-   
-   Optionally, `kubectl` can permanently be added to the PATH and `admin.conf` can be copied to `~/.kube/config`, which results in a more permanent solution.
-
 ## Using the Virtual Cluster
+
+Both the `deepops/config` and `deepops/config/inventory` are created by `vagrant_startup.sh`, so you'll be able to run playbooks without any additional configuration.
+
+### SLURM
+
+Follow the [Slurm Deployment Guide](/docs/slurm-cluster/README.md) and then consult the [Slurm Usage Guide](/docs/slurm-cluster/slurm-usage.md) for examples of how to use SLURM.
 
 ### Kubernetes
 
-Consult the [Kubernetes Usage Guide](/docs/kubernetes-usage.md) for examples of how to use Kubernetes.
+Follow the [Kubernetes Deployment Guide](/docs/k8s-cluster/README.md) and then consult the [Kubernetes Usage Guide](/docs/k8s-cluster/kubernetes-usage.md) for examples of how to use Kubernetes.
 
 ### Connecting to the VMs
 
-Connect to any of the VM nodes directly via vagrant ssh...
+All running VMs can be listed with
 
 ```sh
 # NOTE: Must be in the `deepops/virtual` directory
 
-vagrant ssh virtual-gpu01
+$ vagrant status
+Current machine states:
+
+virtual-mgmt01            running (libvirt)
+virtual-login01           running (libvirt)
+virtual-gpu01             running (libvirt)
+
+This environment represents multiple VMs. The VMs are all listed
+above with their current state. For more information about a specific
+VM, run `vagrant status NAME`.
+```
+
+Connect to any of the running VM nodes directly via `vagrant ssh`
+
+```sh
+# NOTE: Must be in the `deepops/virtual` directory
+
+$ vagrant ssh virtual-gpu01
 ```
 
 ## Destroy the Virtual Cluster
@@ -96,7 +115,13 @@ vagrant ssh virtual-gpu01
 To destroy the cluster and shutdown the VMs, run the `vagrant_shutdown.sh` script...
 
 ```sh
-./vagrant_shutdown.sh
+$ ./vagrant_shutdown.sh
+```
+
+or
+
+```sh
+$ vagrant destroy -f
 ```
 
 Check that there are no running VMs using `virsh list`...
@@ -159,14 +184,54 @@ The default Vagrantfiles create VMs that are very minimal in terms of resources 
 
 ### Increase CPUs, memory, and GPUs
 
-In the Vagrantfile of choice (Vagrantfile-<os_type>), make the following modifications...
+Resources can be increased with `vagrant_startup.sh`
 
-1. Increase the memory and cpus for the `virtual-mgmt01` VM. Suggested - v.memory = 16384, v.cpus = 8.
-2. Comment out the `virtual-login01` VM. Unless you are running slurm, this is not necessary and just takes up resources.
+```
+Usage: vagrant_startup.sh [-h] [-v] [-s] [-O STR] [-V STR]
+             [-G INT] [-N INT] [-C INT] [-x INT]
+             [-M INT] [-m INT] [-y INT]
+             [-L INT] [-l INT] [-z INT]
+
+optional OS related arguments:
+ -O STR OS Distribution [ubuntu]
+        Supported options: {ubuntu centos}
+ -V STR OS Version [2004]
+        Supported versions:
+          - ubuntu {1804, 2004}
+          - centos {7, 8}
+
+optional compute node VM arguments:
+ -G INT GPUs per VM [1]
+ -N INT Number of compute VMs [1]
+        Increasing this beyond the number of GPUs
+        will create CPU-only nodes.
+ -C INT CPUs per compute VM [2]
+ -x INT MB RAM per compute VM [4096]
+
+optional management VM arguments:
+ -M INT Number of management VMs [1]
+ -m INT Number CPUs per management VM [2]
+ -y INT MB RAM per management VM [4096]
+
+optional login VM arguments:
+ -L INT Number of login VMs [1]
+ -l INT Number CPUs per login VM [2]
+ -z INT MB RAM per login VM [4096]
+
+optional arguments:
+ -s     Skip dependency check
+ -v     Enable verbose logging
+ -d     Enable Vagrant debug logging
+ -h     Print this help text
+```
+
+Helpful tips:
+
+1. For Kubernetes clusters, we suggest increasing the memory to 16384 (`-y 16384`) and CPUs to 8 (`-m 8`) on the management VMs.
+2. Exclude the `virtual-login01` VM (`-L 0`). Unless you are running slurm, this is not necessary and just takes up resources.
 3. Increase the cpus for the `virtual-gpu01` VM. Suggested - v.cpus = 8.
-4. If more GPUs are available, pass all of them through using the instructions in the section above.
 
-NOTE: The amount of CPUs and memory on the host system will vary. Change the amounts above accordingly to values that make sense.
+> NOTE: The amount of CPUs and memory on the host system will vary. Change the amounts above accordingly to values that make sense.
 
 ### Increase Disk Space
 
@@ -192,10 +257,11 @@ df -h /
 
 The default configuration deploys a single management node and a single GPU node. To run multi-node Deep Learning jobs or to test our Kubernetes HA it's necessary to deploy multiple nodes.
 
-1. If using GPUs, ensure that 2 GPUs are available.
-2. If using GPUS, update the GPU BUS address for virtual-gpu01 and virtual-gpu02 in the "full" Vagrantfile of choice (Vagrantfile-<os_type>-full).
-3. Run `export DEEPOPS_FULL_INSTALL=true`.
-4. Continue with the standard installation steps.
+```
+./vagrant_startup.sh -G 1 -N 2 -C 2 -x 16384 -M 3 -m 2 -y 2048 -L 1 -l 4 -z 6144
+```
+
+This configuration requires at least 2 GPUs configured for passthrough.
 
 # Enabling Virtualization and GPU Passthrough
 

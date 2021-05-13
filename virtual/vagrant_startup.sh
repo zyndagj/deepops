@@ -63,7 +63,7 @@ optional OS related arguments:
  -V STR OS Version [${OS_VERSION}]
         Supported versions:
           - ubuntu {1804, 2004}
-	  - centos {7, 8}
+          - centos {7, 8}
 
 optional compute node VM arguments:
  -G INT GPUs per VM [${GPUS_PER_VM}]
@@ -86,10 +86,11 @@ optional login VM arguments:
 optional arguments:
  -s     Skip dependency check
  -v     Enable verbose logging
+ -d     Enable Vagrant debug logging
  -h     Print this help text""" >&2; exit 0
 }
 
-while getopts :hvsO:V:G:N:C:x:M:m:y:L:l:z: flag; do
+while getopts :hdvsO:V:G:N:C:x:M:m:y:L:l:z: flag; do
   case "${flag}" in
     O) export OS_DIST=${OPTARG};;
     V) export OS_VERSION=${OPTARG};;
@@ -105,6 +106,7 @@ while getopts :hvsO:V:G:N:C:x:M:m:y:L:l:z: flag; do
     z) export LOGIN_MEM=${OPTARG};;
     s) export SKIP_DEPS=1;;
     v) export VERBOSE=1;;
+    d) export VAGRANT_LOG=debug;;
     :) echo -e "[ERROR] Missing an argument for ${OPTARG}\n" >&2; usage;;
     \?) echo -e "[ERROR] Illegal option ${OPTARG}\n" >&2; usage;;
     h) usage;;
@@ -149,6 +151,8 @@ export APT_DEPENDENCIES="build-essential sshpass qemu-kvm libvirt-bin \
     libvirt-dev bridge-utils libguestfs-tools qemu ovmf virt-manager firewalld ssh"
 
 function install_vagrant_plugins {
+  ed "Detected $(vagrant --version)"
+  [ -n "$SKIP_DEPS" ] && return
   for plugin in libvirt sshfs host-shell scp mutate; do
     pname=vagrant-${plugin}
     if vagrant plugin list | grep -q ${pname}; then
@@ -209,7 +213,6 @@ case "$ID" in
     fi
     # install vagrant plugins
     install_vagrant_plugins
-    ed "Detected $(vagrant --version)"
     # End Install Vagrant & Dependencies for RHEL Systems
     ;;
 
@@ -257,7 +260,6 @@ case "$ID" in
     fi
     # install vagrant plugins
     install_vagrant_plugins
-    ed "Detected $(vagrant --version)"
     # End Install Vagrant & Dependencies for Debian Systems
     ;;
   *)
@@ -298,7 +300,7 @@ fi
 
 # Allow connections to libvirt cluster through firewall
 ed "Allowing all connections from libvirt (192.168.121.0/24) through your firewall"
-sudo firewall-cmd --zone=trusted --add-source=192.168.121.0/24
+ed $(sudo firewall-cmd --zone=trusted --add-source=192.168.121.0/24 2>&1)
 
 ei """Creating the following VMs running ${OS_DIST}${OS_VERSION}:
 - ${N_MGMT_VM} management VMs [${MGMT_CPU} CPU, ${MGMT_MEM} MB RAM]
@@ -326,4 +328,21 @@ if command -v python3 &> /dev/null; then
 else
   ed "Generating inventory with python"
   python scripts/generate_inventory.py
+fi
+
+# Create config.virtual
+CE=${VIRT_DIR}/../config.example
+CV=${VIRT_DIR}/../config
+[ ! -e $CE ] && ee "The deepops/config.example directory doesn't seem to exist"
+if [ ! -e $CV ]; then
+  ei "Creating config.virtual from config.example"
+  cp -r $CE $CV
+  ed "Linking virtual inventory to config.virtual"
+  ln -s ../virtual/inventory ${CV}/inventory
+  ed "Injecting vars from deepops/virtual/vars_files"
+  cat vars_files/virt_k8s.yml >> ${CV}/group_vars/k8s-cluster.yml
+  cat vars_files/virt_slurm.yml >> ${CV}/group_vars/slurm-cluster.yml
+  ei "You can reset this by configuration by deleting deepops/config.virtual and redeploying"
+else
+  [ ! -L ${CV}/inventory ] && ew "Existing config inventory is not linked to the virtual inventory. Please delete and re-run or link the current inventory 'ln -s ../virtual/inventory ../config/inventory'"
 fi
