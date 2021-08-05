@@ -38,11 +38,23 @@ end
 LIST_FILE = "machine_list.tsv"
 $gpu_gen = gpu_generator
 $ip_gen = ip_generator
+$gpu_table = Hash.new
+
+def get_gpu(name, gpu_index)
+  key = name+gpu_index.to_s
+  if $gpu_table.has_key? key
+    return $gpu_table[key]
+  else
+    $gpu_table[key] = $gpu_gen.next
+    return $gpu_table[key]
+  end
+end
 
 # Function for provisioning nodes
 def provision_node(c, name_str, n, mb_mem, n_cpu, n_gpu=0)
   (1..n).each do |i|
     tmp_name = "virtual-#{name_str}" + i.to_s.rjust(2, "0")
+    visited = false
     c.vm.define tmp_name do |node|
       node.vm.hostname = tmp_name
       node.vm.provider "libvirt" do |v|
@@ -51,11 +63,10 @@ def provision_node(c, name_str, n, mb_mem, n_cpu, n_gpu=0)
         v.machine_type = "q35"
         v.cpu_mode = "host-passthrough"
         (1..n_gpu).each do |g|
-          gpu_bus, gpu_slot, gpu_fun = $gpu_gen.next
+          gpu_bus, gpu_slot, gpu_fun = get_gpu(tmp_name, g)
           v.pci :bus => gpu_bus, :slot => gpu_slot, :function => gpu_fun
         end
       end
-      node.vm.box = BOX_IMAGE
       tmp_ip = $ip_gen.next
       node.vm.network "private_network", ip: tmp_ip
       if name_str == "mgmt"
@@ -78,12 +89,13 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
   config.ssh.insert_key = false
   config.ssh.private_key_path = ["~/.ssh/id_rsa", "~/.vagrant.d/insecure_private_key"]
   config.vm.provision "file", source: "~/.ssh/id_rsa.pub", destination: "~/.ssh/authorized_keys"
+  config.vm.box = BOX_IMAGE
 
   provision_node(config, "mgmt", N_MGMT_VM, MGMT_MEM, MGMT_CPU)
   provision_node(config, "login", N_LOGIN_VM, LOGIN_MEM, LOGIN_CPU)
   
   gpu_vm = N_GPUS/GPUS_PER_VM
-  provision_node(config, "gpu", gpu_vm, GPU_MEM, GPU_CPU)
+  provision_node(config, "gpu", gpu_vm, GPU_MEM, GPU_CPU, GPUS_PER_VM)
   cpu_vm = N_GPU_VM-gpu_vm
   provision_node(config, "cpu", cpu_vm, GPU_MEM, GPU_CPU)
 
@@ -91,7 +103,7 @@ Vagrant.configure(VAGRANTFILE_API_VERSION) do |config|
     config.vm.provision "shell", inline: <<-SHELL
       sed -i -e 's/4\.2\.2\.1/8.8.8.8/g' -e 's/4\.2\.2\.2/8.8.4.4/g' /etc/netplan/01-netcfg.yaml
       netplan apply
-      apt-get update
+      #apt-get update
     SHELL
   end
 end

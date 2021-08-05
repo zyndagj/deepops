@@ -34,18 +34,18 @@ export OS_VERSION=2004
 # Management values
 export N_MGMT_VM=1
 export MGMT_CPU=2
-export MGMT_MEM=4096
+export MGMT_MEM=2048
 # Login values
 export N_LOGIN_VM=1
 export LOGIN_CPU=2
-export LOGIN_MEM=4096
+export LOGIN_MEM=6144
 # Compute values
 export GPUS_PER_VM=1
 export N_GPUS=$(${VIRT_DIR}/scripts/get_passthrough_gpus.sh -N)
 export N_GPU_VM=$(( $N_GPUS / $GPUS_PER_VM ))
 export N_CPU_VM=0
 export GPU_CPU=2
-export GPU_MEM=4096
+export GPU_MEM=6144
 ###################################
 # Handle CLI arguments
 ###################################
